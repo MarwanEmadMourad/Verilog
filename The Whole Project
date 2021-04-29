@@ -1,0 +1,186 @@
+module Target (AD,C_BE,frame,T_Rdy,DevSel,clk ) ;
+
+inout [31:0] AD ;                   // Address/Data Bus
+reg[31:0] AD_in;                    // internal buffer
+
+reg [31:0] Address_buffer ;         // Buffer to hold the address in the address phase
+reg [31:0] Data_buffer ;            // Buffer to hold the Data in the Data phase
+
+input clk ;
+input  [3:0] C_BE ;                 // Command/Byte_enable  
+input  frame ;                      // frame bit
+
+output reg T_Rdy = 1;               // Target ready bit initiallized with 1 and to be asserted to zero later.
+output reg DevSel = 1;              // Device select bit initiallized with 1 and to be asserted to zero later.
+
+reg Dev_flag ;                      // Flag to know that device read it's address on the positive edge 
+reg Read_flag = 1'b0;               // flag to know the data os ready to be put on AD bus after obtaining it from the target memory
+reg[31:0] Mem[0:3] ;                // local target memory consists of (4 places * 32 bit)
+reg wait_flag = 1;                  // this flag is responsible for making the DevSel and T_Rdy wait a cycle after the frame is high. 
+reg [3:0] command_buffer = 4'b0000;         // buffer to obtain and save the command bits  
+
+
+assign AD = Read_flag ? Data_buffer : 32'bz;    //if the data is ready in the data buffer put it on the AD bus (Read Operation)
+
+
+
+always@(posedge clk)
+    begin
+        // transaction starts when the frame is zero or the device select is 0
+        if (frame == 1'b0 || DevSel == 1'b0) 
+            begin
+                AD_in = AD ;                // take the value on the bus put it in the internal buffer
+                
+                if(Address_buffer == 2'b00 || Address_buffer == 2'b01 || Address_buffer == 2'b10 || Address_buffer == 2'b11 )
+                Dev_flag = 1;              // Put Devfalg = 1 to know that the transaction started to make DevSel and T_Rdy high
+                
+                if(DevSel == 1'b1)           // before reading the address the DevSel is 1 
+                begin
+                    if (C_BE == 4'b0111)
+                        command_buffer = 4'b0111;   // take the command 4 bits and save it in the command buffer
+                        
+                    else if (C_BE == 4'b0110)
+                        command_buffer = 4'b0110;
+                end
+
+/////////////////////////////////////////////////// Write Operation//////////////////////////////////////////////////////
+
+                    
+                if(command_buffer == 4'b0111 )      // checking the write command bits
+                
+                begin
+                
+                    //checking if the device select and target ready are 1 after setting the fram to 0 
+                    if( DevSel == 1 && T_Rdy == 1)  
+
+                    begin
+
+                        Address_buffer = AD_in;        // take the address in the address buffer if the transaction started
+                        
+                        if(Address_buffer == 2'b00 || Address_buffer == 2'b01 || Address_buffer == 2'b10 || Address_buffer == 2'b11 )
+                            Dev_flag <= 1 ;        
+                    end
+                    
+                    // after the target is ready and the correct address was sent by the initiator
+                    if (DevSel == 0 && T_Rdy == 0)
+                   begin
+
+                   Data_buffer = AD_in ; // take the data in the Data buffer.
+
+                                         // Byte Enable configuration//
+                   
+                   //if bit 3 in the byte enable(4 bits) is 1 then the target will take the 3rd byte
+                   if(C_BE[3] == 1)
+                        Mem[Address_buffer][31:24] = Data_buffer[31:24] ;
+                   
+                   // else write 0 in the 3rd byte
+                   else if(C_BE[3] == 0)
+                        Mem[Address_buffer][31:24] = 0 ;
+                       
+                   //if bit 2 in the byte enable(4 bits) is 1 then the target will take the 2nd byte
+                   if(C_BE[2] == 1)
+                        Mem[Address_buffer][23:16] = Data_buffer[23:16] ;
+                        
+                   // else write 0 in the 2nd byte
+                   else if(C_BE[2] == 0)
+                        Mem[Address_buffer][23:16] = 0 ;
+                        
+                   //if bit 1 in the byte enable(4 bits) is 1 then the target will take the 1st byte   
+                   if(C_BE[1] == 1)
+                        Mem[Address_buffer][15:8] = Data_buffer[15:8] ;
+                        
+                   // else write 0 in the 1st byte
+                   else if(C_BE[1] == 0)
+                        Mem[Address_buffer][15:8] = 0 ;
+                        
+                   //if bit 0 in the byte enable(4 bits) is 1 then the target will take the zeroth byte
+                   if(C_BE[0] == 1)
+                   begin
+                        Mem[Address_buffer][7:0] = Data_buffer[7:0] ;
+                    end
+                   // else write 0 in the zeroth byte
+                   else if(C_BE[0] == 0)
+                   begin
+                        Mem[Address_buffer][7:0] = 0 ;
+                    end  
+                    
+                   //as long as you are in the range of the memory increment the address to take the next data phase in the next address
+                   if ( Address_buffer  <= 2)
+                        Address_buffer = Address_buffer + 1 ;
+                   
+                   end
+                    
+            end
+    
+
+////////////////////////////////////////// Read Operation////////////////////////////////////////////
+
+                // Check the corresponding read command bits  
+                if(command_buffer == 4'b0110 )
+                    begin
+                        //checking if the device select and target ready are 1 after setting the frame to 0 --> address phase
+                        if( DevSel == 1 && T_Rdy == 1)  
+                        
+                        begin
+                            Address_buffer = AD_in;        // take the address you want to read from in the address buffer if the transaction started
+                            if(Address_buffer == 32'b00 || Address_buffer == 32'b01 || Address_buffer == 32'b10 || Address_buffer == 32'b11 )
+                              Dev_flag = 1;  // puting the Devflag equal 1 to make the DevSel and T_Rdy high after checking that the address sent belongs to the target
+                                
+                            
+                        end
+                        
+                        // after the target is ready and the correct address was sent by the initiator
+                        if (DevSel == 0 && T_Rdy == 0)
+                           begin
+                              	
+                              	@(negedge clk)
+                            	begin
+                            	    Read_flag = 1;  // flag to know that the data is ready to be put on the AD bus
+                            	end
+                            	
+                            	Data_buffer = Mem[Address_buffer] ;  // obtaining the data from the internal memory to the data buffer
+                            	
+                            	if ( Address_buffer  <= 2)
+                                Address_buffer = Address_buffer + 1 ; // as long as the frame is 0 and the addresses is within the range 
+                                                                      // of the internal memory read from the next address
+                                
+                            
+                    	   end
+                    end
+        end
+        
+    end
+
+    
+    
+ always@ (negedge clk )
+    begin
+        
+        // if the target read its address in the positive edge put DevSel & T_Rdy equals 0 on the negative edge
+        if( Dev_flag == 1)
+	    begin
+	       
+            DevSel <= 0 ; 
+            T_Rdy <= 0 ;
+            Dev_flag <= 0;      // reseting the flag
+            wait_flag <= 1;     // 
+            
+        // after the transaction is over put DevSel & T_Rdy equals 1
+        if(frame == 1)         
+        begin
+            if( wait_flag == 1 )
+                wait_flag <= 0 ;
+            else
+                begin
+                   DevSel <= 1 ; 
+                   T_Rdy <= 1 ;
+                   Read_flag <= 0 ; 	//assigning the read flag to 0 refering that reading operation ended 
+                end
+         end
+        end
+    end
+
+endmodule 
+
+
+
